@@ -1,0 +1,20 @@
+{
+  "block.railway_operations.ghost_seat": "滚木坐垫",
+
+  "railway_operations.schedule.condition.door_control": "车门控制",
+  "railway_operations.schedule.condition.door_control.summary": "%1$s, %2$s",
+  "railway_operations.schedule.condition.door_control.format": "%1$s, 持续%2$s",
+
+  "railway_operations.door_side.all": "全部",
+  "railway_operations.door_side.north": "北侧",
+  "railway_operations.door_side.east": "东侧",
+  "railway_operations.door_side.south": "南侧",
+  "railway_operations.door_side.west": "西侧",
+  "railway_operations.door_side.none": "无",
+
+  "railway_operations.schedule.condition.broadcast": "列车广播",
+  "railway_operations.door_side.follow_station": "跟随车站",
+  "railway_operations.gui.select_pack": "选择音频包",
+  "railway_operations.gui.select_broadcast": "选择广播",
+  "railway_operations.gui.delay_value": "延时值"
+}

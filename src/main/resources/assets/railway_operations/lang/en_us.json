@@ -1,0 +1,21 @@
+{
+  "block.railway_operations.ghost_seat": "Ghost Seat",
+
+  "railway_operations.schedule.condition.door_control": "Door Control",
+  "railway_operations.schedule.condition.door_control.summary": "%1$s, %2$s",
+  "railway_operations.schedule.condition.door_control.format": "%1$s side, for %2$s",
+
+  "railway_operations.schedule.condition.broadcast": "Train Announcement",
+
+  "railway_operations.door_side.all": "All",
+  "railway_operations.door_side.north": "North",
+  "railway_operations.door_side.east": "East",
+  "railway_operations.door_side.south": "South",
+  "railway_operations.door_side.west": "West",
+  "railway_operations.door_side.none": "None",
+  "railway_operations.door_side.follow_station": "Follow Station",
+
+  "railway_operations.gui.select_pack": "Select Pack",
+  "railway_operations.gui.select_broadcast": "Select Announcement",
+  "railway_operations.gui.delay_value": "Delay"
+}

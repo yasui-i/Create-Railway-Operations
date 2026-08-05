@@ -1,0 +1,6 @@
+{
+  "variants": {
+    "waterlogged=false": { "model": "railway_operations:block/ghost_seat" },
+    "waterlogged=true":  { "model": "railway_operations:block/ghost_seat" }
+  }
+}
