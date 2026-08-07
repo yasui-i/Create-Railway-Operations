@@ -1,12 +1,18 @@
 package com.railway.railway_operations.audio;
 
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.UUID;
 
 import org.slf4j.Logger;
 
@@ -119,5 +125,105 @@ public class AudioManager {
     public static Path resolveStationFile(AudioPack pack, String stationId, String lang) {
         if (stationId == null || lang == null) return null;
         return pack.directory().resolve(lang).resolve("stations").resolve(stationId + ".ogg");
+    }
+
+    // ---- Bundle serialization for configuration-phase sync ----
+
+    static final int BUNDLE_MAGIC = 0x524F4150; // "ROAP"
+    static final int BUNDLE_VERSION = 1;
+    static final int MAX_PACK_BYTES = 32 * 1024 * 1024;   // 32 MiB per pack
+    static final int MAX_TOTAL_BYTES = 128 * 1024 * 1024; // 128 MiB total
+
+    /**
+     * Creates a binary bundle of all .zip audio packs for synchronization to clients.
+     * Bundle format: MAGIC(int) + VERSION(int) + COUNT(int) + [NAME(UTF) + SIZE(int) + DATA(bytes)]*N
+     */
+    public static Transfer createTransfer() {
+        try {
+            byte[] bundle = createBundle();
+            if (bundle.length > MAX_TOTAL_BYTES) {
+                return Transfer.error("Server audio packs exceed the 128 MiB synchronization limit");
+            }
+            String sha256 = HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(bundle));
+            return new Transfer(UUID.randomUUID(), bundle, sha256);
+        } catch (Exception e) {
+            LOGGER.error("Could not prepare audio synchronization", e);
+            return Transfer.error("Could not prepare audio synchronization: " + e.getMessage());
+        }
+    }
+
+    private static byte[] createBundle() throws IOException {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        DataOutputStream out = new DataOutputStream(bos);
+
+        // Scan audio directory for .zip files
+        Path root = Path.of(AUDIO_DIR);
+        Map<String, byte[]> packFiles = new LinkedHashMap<>();
+        if (Files.isDirectory(root)) {
+            try (var entries = Files.newDirectoryStream(root, "*.zip")) {
+                for (Path zipPath : entries) {
+                    String name = zipPath.getFileName().toString();
+                    byte[] data = Files.readAllBytes(zipPath);
+                    if (data.length > MAX_PACK_BYTES) {
+                        throw new IOException("Audio pack " + name + " exceeds " + MAX_PACK_BYTES + " bytes");
+                    }
+                    packFiles.put(name, data);
+                }
+            }
+        }
+
+        // Write header
+        out.writeInt(BUNDLE_MAGIC);
+        out.writeInt(BUNDLE_VERSION);
+        out.writeInt(packFiles.size());
+
+        // Write entries
+        for (var entry : packFiles.entrySet()) {
+            String name = entry.getKey();
+            byte[] data = entry.getValue();
+
+            out.writeUTF(name);
+            out.writeInt(data.length);
+            out.write(data);
+
+            // Check running total
+            if (bos.size() > MAX_TOTAL_BYTES) {
+                throw new IOException("Combined audio packs exceed " + MAX_TOTAL_BYTES + " bytes");
+            }
+        }
+
+        out.close();
+        return bos.toByteArray();
+    }
+
+    /** Transfer descriptor used by the configuration task. */
+    public static class Transfer {
+        private final UUID id;
+        private final byte[] bundle;
+        private final String sha256;
+        private final String error;
+
+        Transfer(UUID id, byte[] bundle, String sha256) {
+            this.id = id;
+            this.bundle = bundle;
+            this.sha256 = sha256;
+            this.error = null;
+        }
+
+        private Transfer(String error) {
+            this.id = null;
+            this.bundle = null;
+            this.sha256 = null;
+            this.error = error;
+        }
+
+        static Transfer error(String msg) { return new Transfer(msg); }
+
+        public boolean isError() { return error != null; }
+        public String error() { return error; }
+        public UUID id() { return id; }
+        public byte[] bundle() { return bundle; }
+        public String sha256() { return sha256; }
     }
 }

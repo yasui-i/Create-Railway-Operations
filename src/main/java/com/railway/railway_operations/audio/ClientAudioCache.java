@@ -6,13 +6,12 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
-import com.railway.railway_operations.network.ServerboundAudioRequestPacket;
-
 import net.neoforged.neoforge.network.PacketDistributor;
 
 /**
  * Client-side cache for audio data keyed by SHA-256 hash.
- * Stores in-memory and optionally on disk at .minecraft/railway_operations/audio_cache/
+ * After configuration-phase sync, audio data is available via {@link AudioHashRegistry}.
+ * This cache provides a fast in-memory and on-disk layer on top.
  */
 public class ClientAudioCache {
 
@@ -31,14 +30,15 @@ public class ClientAudioCache {
     }
 
     public static boolean isKnown(String hash) {
-        return knownHashes.contains(hash);
+        return knownHashes.contains(hash) || AudioHashRegistry.hasHash(hash);
     }
 
     public static byte[] get(String hash) {
-        // memory cache
+        // Memory cache
         byte[] data = memoryCache.get(hash);
         if (data != null) return data;
-        // disk cache
+
+        // Disk cache
         Path file = CACHE_DIR.resolve(hash + ".ogg");
         if (Files.exists(file)) {
             try {
@@ -47,6 +47,14 @@ public class ClientAudioCache {
                 return data;
             } catch (IOException ignored) {}
         }
+
+        // Fall back to AudioHashRegistry (populated by configuration-phase sync)
+        data = AudioHashRegistry.getData(hash);
+        if (data != null) {
+            memoryCache.put(hash, data);
+            return data;
+        }
+
         return null;
     }
 
@@ -57,8 +65,12 @@ public class ClientAudioCache {
         } catch (IOException ignored) {}
     }
 
-    /** Request missing audio from server and cache it when received. */
+    /**
+     * Request missing audio from server. With configuration-phase sync this is
+     * rarely needed, but kept for edge cases (e.g. new packs uploaded during play).
+     */
     public static void requestFromServer(String hash) {
-        PacketDistributor.sendToServer(new ServerboundAudioRequestPacket(hash));
+        PacketDistributor.sendToServer(
+                new com.railway.railway_operations.network.ServerboundAudioRequestPacket(hash));
     }
 }

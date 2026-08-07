@@ -94,7 +94,13 @@ public class BroadcastCondition extends ScheduleWaitCondition {
 
     @Override
     public boolean tickCompletion(Level level, Train train, CompoundTag context) {
-        // Always complete immediately — delay is handled client-side
+        // Fire broadcast only once per schedule pass.
+        // Create may call tickCompletion multiple times before advancing,
+        // so track via context to prevent repeated audio spam.
+        if (context.getBoolean("BroadcastFired")) {
+            return true; // already fired, just complete
+        }
+        context.putBoolean("BroadcastFired", true);
         playBroadcastOnTrain(train, level, getDelaySeconds() * 20);
         return true;
     }
@@ -106,6 +112,8 @@ public class BroadcastCondition extends ScheduleWaitCondition {
         AudioPack.BroadcastDef def = pack.broadcasts().get(resolveBroadcastKey(pack));
         if (def == null) return;
 
+        // Only send from the first available carriage — sending from every carriage
+        // would cause duplicate broadcasts (echo) for players tracking multiple carriages.
         for (Carriage carriage : train.carriages) {
             CarriageContraptionEntity entity = carriage.anyAvailableEntity();
             if (entity == null) continue;
@@ -123,6 +131,7 @@ public class BroadcastCondition extends ScheduleWaitCondition {
                     }
                 }
             }
+            break; // one carriage is enough — prevents echo
         }
     }
 
