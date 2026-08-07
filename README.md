@@ -23,7 +23,7 @@
 **Audio Pack System**
 - Audio packs load from `config/railway_operations/audio/` as `.zip` files or directories.
 - `pack.json` supports simple mode (single file) and template mode (language + station name splicing).
-- Server builds a binary bundle of all packs and syncs to clients during the **configuration phase** (before the player joins the world), using SHA-256 verification and chunked transfer — identical to `custom-train-door`'s sync pattern.
+- Server builds a binary bundle of all packs and syncs to clients during the **configuration phase** (before the player joins the world), using SHA-256 verification and chunked transfer.
 - On-demand lazy-load fallback for clients that miss chunks during sync.
 
 **Ghost Seat**
@@ -107,7 +107,7 @@ DESTINATION: Beijing South
 **音频包系统**
 - 音频包从 `config/railway_operations/audio/` 加载，支持 `.zip` 文件和目录格式。
 - `pack.json` 支持简单模式（单文件）和模板模式（语言+站名拼接）。
-- 服务端将所有音频包打包为二进制 bundle，在玩家加入前的**配置握手阶段**通过分块传输同步到客户端，采用 SHA-256 校验 — 与 `custom-train-door` 同步机制完全一致。
+- 服务端将所有音频包打包为二进制 bundle，在玩家加入前的**配置握手阶段**通过分块传输同步到客户端，采用 SHA-256 校验。
 - 懒加载回退：同步丢失的音频可在运行时按需获取。
 
 **幽灵坐垫**
