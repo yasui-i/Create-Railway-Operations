@@ -47,10 +47,11 @@ import net.minecraft.world.phys.Vec3;
  * When activated (train arrives at station), opens doors on the configured side.
  * Doors stay open until the condition's duration expires, then close.
  * <p>
- * Supports "Follow Station" mode — reads the station's own door control setting
+ * Supports "Follow Station" mode 鈥?reads the station's own door control setting
  * and uses it as the target direction, overriding the station's auto-open.
  */
 public class DoorControlCondition extends TimedWaitCondition {
+
 
     private static final String DOOR_SIDE_KEY = "DoorSide";
 
@@ -87,9 +88,7 @@ public class DoorControlCondition extends TimedWaitCondition {
     public boolean tickCompletion(Level level, Train train, CompoundTag context) {
         int time = context.getInt("Time");
         int totalTicks = totalWaitTicks();
-
         if (time >= totalTicks) {
-            // Duration expired: close doors (all doors if following station)
             setDoorsOnTrain(train, level, false,
                     isFollowStation() ? DoorControl.ALL : getDoorSide());
             return true;
@@ -106,7 +105,6 @@ public class DoorControlCondition extends TimedWaitCondition {
         requestDisplayIfNecessary(context, time);
         return false;
     }
-
     // ==================== Persistence ====================
 
     @Override
@@ -161,7 +159,7 @@ public class DoorControlCondition extends TimedWaitCondition {
     public void initConfigurationWidgets(ModularGuiLineBuilder builder) {
         // Layout: DoorSide(0-50) | Value(52-74) | TimeUnit(76-129)
 
-        // 1) Door side selection — includes "Follow Station"
+        // 1) Door side selection 鈥?includes "Follow Station"
         builder.addSelectionScrollInput(0, 50, (selectionScroll, label) -> {
             List<Component> options = new ArrayList<>();
             for (DoorControl dc : DoorControl.values()) {
@@ -215,7 +213,7 @@ public class DoorControlCondition extends TimedWaitCondition {
         if (behaviour == null) return DoorControl.ALL;
 
         DoorControl mode = behaviour.mode;
-        // NONE means "don't open anything" — follow that intent
+        // NONE means "don't open anything" 鈥?follow that intent
         return mode == DoorControl.NONE ? DoorControl.ALL : mode;
     }
 
@@ -263,10 +261,59 @@ public class DoorControlCondition extends TimedWaitCondition {
                     toggleDoor(localPos, contraption, blockInfo);
                     level.playSound(null,
                             entity.blockPosition(),
-                            getDoorSound(state.getBlock(), open),
-                            SoundSource.BLOCKS, 1.0F, 1F);
+                            getDoorSound(state.getBlock(), blockInfo, open),
+                            SoundSource.BLOCKS, 1.0F, 1.0F);
+                    syncStationDoor(entity, localPos, worldFacing, level, open);
                 }
             }
+        }
+    }
+
+    private static void syncStationDoor(AbstractContraptionEntity entity, BlockPos localPos,
+                                         Direction worldFacing, Level level, boolean open) {
+        BlockPos trainDoorPos = BlockPos.containing(
+                entity.toGlobalVector(Vec3.atCenterOf(localPos), 0));
+        Direction[] scanOrder = {worldFacing, worldFacing.getOpposite(),
+                Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST};
+        boolean found = false;
+        for (Direction side : scanOrder) {
+            if (side == null) continue;
+            for (int i = 1; i <= 5; i++) {
+                BlockPos stationDoorPos = trainDoorPos.relative(side, i);
+                BlockState stationDoorState = level.getBlockState(stationDoorPos);
+                if (stationDoorState.getBlock() instanceof DoorBlock station
+                        && stationDoorState.hasProperty(DoorBlock.OPEN)) {
+                    boolean before = stationDoorState.getValue(DoorBlock.OPEN);
+                    com.railway.railway_operations.CreateRailwayOperations.LOGGER.info(
+                            "DoorControl sync: trainDoor={} stationDoor={} block={} before={} want={}",
+                            trainDoorPos, stationDoorPos,
+                            stationDoorState.getBlock().getClass().getSimpleName(), before, open);
+                    if (before != open) {
+                        station.setOpen(null, level, stationDoorState, stationDoorPos, open);
+                    }
+                    syncAdjacentHalf(level, stationDoorPos, station, open);
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+        }
+        if (!found) {
+            com.railway.railway_operations.CreateRailwayOperations.LOGGER.warn(
+                    "DoorControl: no station door found near {} facing {}",
+                    trainDoorPos, worldFacing);
+        }
+    }
+
+    private static void syncAdjacentHalf(Level level, BlockPos pos, DoorBlock door, boolean open) {
+        BlockState state = level.getBlockState(pos);
+        if (!state.hasProperty(DoorBlock.HALF)) return;
+        BlockPos other = state.getValue(DoorBlock.HALF) == DoubleBlockHalf.LOWER
+                ? pos.above() : pos.below();
+        BlockState otherState = level.getBlockState(other);
+        if (otherState.is(door) && otherState.hasProperty(DoorBlock.OPEN)
+                && otherState.getValue(DoorBlock.OPEN) != open) {
+            door.setOpen(null, level, otherState, other, open);
         }
     }
 
@@ -311,40 +358,33 @@ public class DoorControlCondition extends TimedWaitCondition {
         contraption.invalidateColliders();
     }
 
-    // ==================== Reflection Bridges ====================
-
-    private static Field contraptionField;
-
-    static {
-        try {
-            contraptionField = AbstractContraptionEntity.class.getDeclaredField("contraption");
-            contraptionField.setAccessible(true);
-        } catch (NoSuchFieldException e) {
-            throw new RuntimeException("Failed to access AbstractContraptionEntity.contraption field", e);
-        }
-    }
+    // ==================== Contraption Access ====================
 
     private static Contraption getContraption(AbstractContraptionEntity entity) {
-        try {
-            return (Contraption) contraptionField.get(entity);
-        } catch (IllegalAccessException e) {
-            return null;
-        }
+        return entity.getContraption();
     }
 
     // ==================== Sound Logic ====================
 
-    private static SoundEvent getDoorSound(Block doorBlock, boolean open) {
+private static boolean isCustomTrainDoor(Block doorBlock) {
+        return doorBlock.getClass().getName().startsWith("cn.autoforged.custom_train_door.");
+    }
+
+    private static SoundEvent getDoorSound(Block doorBlock, StructureBlockInfo blockInfo, boolean open) {
         String className = doorBlock.getClass().getName();
         if (className.startsWith("cn.autoforged.custom_train_door")) {
             try {
                 if (className.contains("TarindoorBlock")) {
-                    return getTarindoorSound(doorBlock, open);
+                    return getTarindoorSound(blockInfo, open);
                 }
                 Class<?> modSounds = Class.forName(
                         "cn.autoforged.custom_train_door.sound.ModSounds");
                 String fieldName;
-                if (className.contains("CRH2ADoorBlock")) {
+                if (className.contains("MetroDoorBlock2")) {
+                    fieldName = open ? "METRO_DOOR_V2_OPEN" : "METRO_DOOR_V2_CLOSE";
+                } else if (className.contains("MetroDoorBlock")) {
+                    fieldName = open ? "METRO_DOOR_OPEN" : "METRO_DOOR_CLOSE";
+                } else if (className.contains("CRH2ADoorBlock")) {
                     fieldName = open ? "CRH2A_DOOR_OPEN" : "CRH2A_DOOR_CLOSE";
                 } else {
                     fieldName = open ? "CR400BF_DOOR_OPEN" : "CR400BF_DOOR_CLOSE";
@@ -358,11 +398,16 @@ public class DoorControlCondition extends TimedWaitCondition {
         return open ? SoundEvents.IRON_DOOR_OPEN : SoundEvents.IRON_DOOR_CLOSE;
     }
 
-    private static SoundEvent getTarindoorSound(Block doorBlock, boolean open) throws Exception {
-        Object definition = doorBlock.getClass().getMethod("getDefinition").invoke(doorBlock);
-        if (definition == null) return fallback(open);
-
-        String id = (String) definition.getClass().getMethod("id").invoke(definition);
+    /**
+     * Every tarindoor door is the same block, so the per-door identity only exists in
+     * the contraption block's saved block entity data ("DoorId"). Asking the Block
+     * (the old getDefinition() reflection call) always answered with the first loaded
+     * definition, so a door on a train played another door's sound.
+     */
+    private static SoundEvent getTarindoorSound(StructureBlockInfo blockInfo, boolean open) throws Exception {
+        CompoundTag nbt = blockInfo == null ? null : blockInfo.nbt();
+        String id = nbt == null ? "" : nbt.getString("DoorId");
+        if (id.isEmpty()) return fallback(open);
 
         Class<?> registry = Class.forName(
                 "cn.autoforged.custom_train_door.tarindoor.TarindoorRegistry");

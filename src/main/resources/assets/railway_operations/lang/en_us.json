@@ -1,11 +1,15 @@
 {
+  "itemGroup.railway_operations": "Railway Operations",
+  "block.railway_operations.platform_broadcast": "Platform Broadcast",
   "block.railway_operations.ghost_seat": "Ghost Seat",
+  "block.railway_operations.ghost_seat_full": "Ghost Seat (Full Block)",
 
   "railway_operations.schedule.condition.door_control": "Door Control",
   "railway_operations.schedule.condition.door_control.summary": "%1$s, %2$s",
   "railway_operations.schedule.condition.door_control.format": "%1$s side, for %2$s",
-
+  "railway_operations.schedule.instruction.broadcast": "Train Announcement",
   "railway_operations.schedule.condition.broadcast": "Train Announcement",
+  "railway_operations.schedule.instruction.broadcast_instruction": "Train Announcement",
 
   "railway_operations.door_side.all": "All",
   "railway_operations.door_side.north": "North",
@@ -17,5 +21,7 @@
 
   "railway_operations.gui.select_pack": "Select Pack",
   "railway_operations.gui.select_broadcast": "Select Announcement",
-  "railway_operations.gui.delay_value": "Delay"
+  "railway_operations.gui.delay_value": "Delay",
+  "railway_operations.gui.distance_threshold": "Before station (m)",
+  "railway_operations.gui.scroll_to_modify": "Scroll to Modify"
 }

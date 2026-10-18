@@ -1,5 +1,8 @@
 {
+  "itemGroup.railway_operations": "铁路运营",
+  "block.railway_operations.platform_broadcast": "站台广播器",
   "block.railway_operations.ghost_seat": "滚木坐垫",
+  "block.railway_operations.ghost_seat_full": "滚木坐垫（完整方块）",
 
   "railway_operations.schedule.condition.door_control": "车门控制",
   "railway_operations.schedule.condition.door_control.summary": "%1$s, %2$s",
@@ -12,9 +15,13 @@
   "railway_operations.door_side.west": "西侧",
   "railway_operations.door_side.none": "无",
 
+  "railway_operations.schedule.instruction.broadcast": "列车广播",
   "railway_operations.schedule.condition.broadcast": "列车广播",
+  "railway_operations.schedule.instruction.broadcast_instruction": "列车广播",
   "railway_operations.door_side.follow_station": "跟随车站",
   "railway_operations.gui.select_pack": "选择音频包",
   "railway_operations.gui.select_broadcast": "选择广播",
-  "railway_operations.gui.delay_value": "延时值"
+  "railway_operations.gui.delay_value": "延时值",
+  "railway_operations.gui.distance_threshold": "到站前(m)",
+  "railway_operations.gui.scroll_to_modify": "滚轮调整"
 }

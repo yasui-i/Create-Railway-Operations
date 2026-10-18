@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import com.google.common.collect.ImmutableList;
 import com.railway.railway_operations.audio.AudioManager;
@@ -34,8 +35,11 @@ public class BroadcastCondition extends ScheduleWaitCondition {
 
     private static final String PACK_KEY = "AudioPack";       // int index
     private static final String BROADCAST_KEY = "Broadcast";  // int index
+    private static final String PACK_ID_KEY = "AudioPackId";
+    private static final String BROADCAST_ID_KEY = "BroadcastId";
     private static final String DELAY_KEY = "Delay";           // int value
     private static final String DELAY_UNIT_KEY = "DelayUnit";  // TimeUnit ordinal
+    private static final Map<UUID, TriggerState> TRIGGER_GUARD = new LinkedHashMap<>();
 
     public BroadcastCondition() {
         super();
@@ -60,24 +64,40 @@ public class BroadcastCondition extends ScheduleWaitCondition {
     // ---- Resolve indices at runtime ----
 
     private AudioPack resolvePack() {
+        String packId = data.getString(PACK_ID_KEY);
+        if (!packId.isEmpty()) {
+            AudioPack selected = AudioManager.getPack(packId);
+            if (selected != null) return selected;
+        }
         int idx = data.getInt(PACK_KEY);
         int i = 0;
         for (AudioPack pack : AudioManager.getPacks().values()) {
-            if (i++ == idx) return pack;
+            if (i++ == idx) {
+                data.putString(PACK_ID_KEY, pack.id());
+                return pack;
+            }
         }
         return null;
     }
 
     private String resolveBroadcastKey(AudioPack pack) {
         if (pack == null || pack.broadcasts().isEmpty()) return "";
+        String broadcastId = data.getString(BROADCAST_ID_KEY);
+        if (!broadcastId.isEmpty() && pack.broadcasts().containsKey(broadcastId)) return broadcastId;
         int idx = data.getInt(BROADCAST_KEY);
+        if (idx < 0 || idx >= pack.broadcasts().size()) {
+            data.putInt(BROADCAST_KEY, 0);
+            idx = 0;
+        }
         int i = 0;
         for (String key : pack.broadcasts().keySet()) {
-            if (i++ == idx) return key;
+            if (i++ == idx) {
+                data.putString(BROADCAST_ID_KEY, key);
+                return key;
+            }
         }
         return pack.broadcasts().keySet().iterator().next();
     }
-
     private String getDisplayPackName() {
         AudioPack pack = resolvePack();
         return pack != null ? pack.name() : "(no pack)";
@@ -94,16 +114,33 @@ public class BroadcastCondition extends ScheduleWaitCondition {
 
     @Override
     public boolean tickCompletion(Level level, Train train, CompoundTag context) {
-        // Fire broadcast only once per schedule pass.
-        // Create may call tickCompletion multiple times before advancing,
-        // so track via context to prevent repeated audio spam.
-        if (context.getBoolean("BroadcastFired")) {
-            return true; // already fired, just complete
-        }
+        if (context.getBoolean("BroadcastFired")) return true;
         context.putBoolean("BroadcastFired", true);
+
+        String station = currentStationKey(train);
+        String conditionKey = data.getString(PACK_ID_KEY) + "|" + data.getString(BROADCAST_ID_KEY)
+                + "|" + data.getInt(PACK_KEY) + "|" + data.getInt(BROADCAST_KEY);
+        UUID trainId = train.id;
+        long gameTime = level.getGameTime();
+        synchronized (TRIGGER_GUARD) {
+            TriggerState previous = TRIGGER_GUARD.get(trainId);
+            if (previous != null && previous.station().equals(station)
+                    && previous.conditionKey().equals(conditionKey)
+                    && gameTime - previous.gameTime() < 20) return true;
+            TRIGGER_GUARD.put(trainId, new TriggerState(station, conditionKey, gameTime));
+            if (TRIGGER_GUARD.size() > 256) TRIGGER_GUARD.clear();
+        }
+
         playBroadcastOnTrain(train, level, getDelaySeconds() * 20);
         return true;
     }
+
+    private String currentStationKey(Train train) {
+        var station = train.getCurrentStation();
+        return station == null ? "" : station.name;
+    }
+
+    private record TriggerState(String station, String conditionKey, long gameTime) {}
 
     private void playBroadcastOnTrain(Train train, Level level, int delayTicks) {
         if (level.isClientSide) return;
@@ -112,35 +149,52 @@ public class BroadcastCondition extends ScheduleWaitCondition {
         AudioPack.BroadcastDef def = pack.broadcasts().get(resolveBroadcastKey(pack));
         if (def == null) return;
 
-        // Only send from the first available carriage — sending from every carriage
-        // would cause duplicate broadcasts (echo) for players tracking multiple carriages.
         for (Carriage carriage : train.carriages) {
             CarriageContraptionEntity entity = carriage.anyAvailableEntity();
             if (entity == null) continue;
 
             if (def.isSimple()) {
-                sendPacket(pack, def.fileName(), entity, delayTicks);
+                sendPacket(pack, def.fileName(), carriage, entity, delayTicks);
             } else {
                 for (String lang : new String[]{"zh"}) {
                     String tpl = "zh".equals(lang) ? def.zhTemplate() : def.enTemplate();
-                    if (tpl != null) sendPacket(pack, lang + "/" + tpl, entity, delayTicks);
+                    if (tpl != null) sendPacket(pack, lang + "/" + tpl, carriage, entity, delayTicks);
                     if (def.hasStation()) {
                         String sid = resolveStationId(train);
                         if (sid != null) sendPacket(pack,
-                                lang + "/stations/" + sid + ".ogg", entity, delayTicks);
+                                lang + "/stations/" + sid + ".ogg", carriage, entity, delayTicks);
                     }
                 }
             }
-            break; // one carriage is enough — prevents echo
         }
     }
 
-    private void sendPacket(AudioPack pack, String filePath,
+    private void sendPacket(AudioPack pack, String filePath, Carriage carriage,
                              CarriageContraptionEntity entity, int delayTicks) {
         java.nio.file.Path file = pack.directory().resolve(filePath);
         String hash = com.railway.railway_operations.audio.AudioHashRegistry.getHash(file);
         if (hash == null) return;
-        var packet = new ClientboundPlayBroadcastPacket(hash, entity.getId(), delayTicks);
+
+        // True carriage center = midpoint of all bogie entity positions
+        double[] sum = {0, 0, 0};
+        int[] count = {0};
+        carriage.forEachPresentEntity(e -> {
+            Vec3 c = e.getBoundingBox().getCenter();
+            sum[0] += c.x; sum[1] += c.y; sum[2] += c.z;
+            count[0]++;
+        });
+        if (count[0] == 0) return;
+
+        double cx = sum[0] / count[0];
+        double cy = sum[1] / count[0];
+        double cz = sum[2] / count[0];
+
+        // Collect bogie entity IDs for client-side position tracking (moving trains)
+        int[] bogieIds = new int[count[0]];
+        int[] idx = {0};
+        carriage.forEachPresentEntity(e -> bogieIds[idx[0]++] = e.getId());
+
+        var packet = new ClientboundPlayBroadcastPacket(hash, cx, cy, cz, bogieIds, delayTicks, 16.0);
         net.neoforged.neoforge.network.PacketDistributor
                 .sendToPlayersTrackingEntity(entity, packet);
     }
@@ -204,35 +258,56 @@ public class BroadcastCondition extends ScheduleWaitCondition {
         // Layout: Pack(0,38) | Broadcast(40,42) | Delay(83,20) | "s"
         Map<String, AudioPack> packs = AudioManager.getPacks();
 
+        List<AudioPack> packList = new ArrayList<>(packs.values());
         List<String> packNames = new ArrayList<>();
-        for (Map.Entry<String, AudioPack> e : packs.entrySet())
-            packNames.add(e.getValue().name());
+        for (AudioPack p : packList) packNames.add(p.name());
         if (packNames.isEmpty()) packNames.add("(no packs)");
-        List<String> packNamesF = packNames;
+
+        final com.simibubi.create.foundation.gui.widget.SelectionScrollInput[] bcWidget = {null};
+
+        java.util.function.Consumer<Integer> refreshBroadcastOptions = idx -> {
+            data.putInt(BROADCAST_KEY, 0);
+            data.remove(BROADCAST_ID_KEY);
+            if (idx >= 0 && idx < packList.size()) data.putString(PACK_ID_KEY, packList.get(idx).id());
+            if (bcWidget[0] == null || idx < 0 || idx >= packList.size()) return;
+            AudioPack pack = packList.get(idx);
+            List<String> bcNames = new ArrayList<>(pack.broadcasts().keySet());
+            if (bcNames.isEmpty()) bcNames.add("...");
+            bcWidget[0].forOptions(bcNames.stream().map(Component::literal).toList());
+            bcWidget[0].setState(0);
+        };
 
         builder.addSelectionScrollInput(0, 32, (sel, label) -> {
-            sel.forOptions(packNamesF.stream()
-                    .map(s -> Component.literal(s)).toList());
-            sel.setState(Math.min(data.getInt(PACK_KEY), packNamesF.size() - 1));
-            sel.format(idx -> idx >= 0 && idx < packNamesF.size()
-                    ? Component.literal(truncate(packNamesF.get(idx), 4))
+            sel.forOptions(packNames.stream().map(Component::literal).toList());
+            sel.setState(Math.min(indexOfPack(packList, resolvePack()), packNames.size() - 1));
+            sel.format(idx -> idx >= 0 && idx < packNames.size()
+                    ? Component.literal(truncate(packNames.get(idx), 4))
                     : Component.literal("..."));
             sel.titled(Component.translatable("railway_operations.gui.select_pack"));
+            sel.calling(idx -> {
+                data.putInt(PACK_KEY, idx);
+                refreshBroadcastOptions.accept(idx);
+            });
         }, PACK_KEY);
 
         builder.addSelectionScrollInput(34, 38, (sel, label) -> {
+            bcWidget[0] = sel;
             AudioPack pack = resolvePack();
             List<String> bcNames = new ArrayList<>();
             if (pack != null) bcNames.addAll(pack.broadcasts().keySet());
             if (bcNames.isEmpty()) bcNames.add("...");
-            List<String> bcNamesF = bcNames;
-            sel.forOptions(bcNamesF.stream()
-                    .map(s -> Component.literal(s)).toList());  // full names in tooltip
-            sel.setState(Math.min(data.getInt(BROADCAST_KEY), bcNamesF.size() - 1));
-            sel.format(idx -> idx >= 0 && idx < bcNamesF.size()
-                    ? Component.literal(truncate(bcNamesF.get(idx), 4))
+            sel.forOptions(bcNames.stream().map(Component::literal).toList());
+            sel.setState(Math.min(indexOfBroadcast(resolvePack(), data.getString(BROADCAST_ID_KEY)), bcNames.size() - 1));
+            sel.format(idx -> idx >= 0 && idx < bcNames.size()
+                    ? Component.literal(truncate(bcNames.get(idx), 4))
                     : Component.literal("..."));
             sel.titled(Component.translatable("railway_operations.gui.select_broadcast"));
+            sel.calling(idx -> {
+                data.putInt(BROADCAST_KEY, idx);
+                AudioPack selectedPack = resolvePack();
+                if (selectedPack != null && idx >= 0 && idx < selectedPack.broadcasts().size())
+                    data.putString(BROADCAST_ID_KEY, new ArrayList<>(selectedPack.broadcasts().keySet()).get(idx));
+            });
         }, BROADCAST_KEY);
 
         builder.addScrollInput(73, 16, (scroll, label) -> {
@@ -247,12 +322,30 @@ public class BroadcastCondition extends ScheduleWaitCondition {
         }, DELAY_UNIT_KEY);
     }
 
+    private int indexOfPack(List<AudioPack> packList, AudioPack target) {
+        int index = packList.indexOf(target);
+        return index >= 0 ? index : 0;
+    }
+
+    private int indexOfBroadcast(AudioPack pack, String key) {
+        if (pack != null && !key.isEmpty()) {
+            int index = 0;
+            for (String current : pack.broadcasts().keySet()) {
+                if (current.equals(key)) return index;
+                index++;
+            }
+        }
+        return 0;
+    }
+
     // ---- Persistence ----
 
     @Override
     protected void writeAdditional(net.minecraft.core.HolderLookup.Provider provider, CompoundTag tag) {
         tag.putInt(PACK_KEY, data.getInt(PACK_KEY));
         tag.putInt(BROADCAST_KEY, data.getInt(BROADCAST_KEY));
+        tag.putString(PACK_ID_KEY, data.getString(PACK_ID_KEY));
+        tag.putString(BROADCAST_ID_KEY, data.getString(BROADCAST_ID_KEY));
         tag.putInt(DELAY_KEY, data.getInt(DELAY_KEY));
         tag.putInt(DELAY_UNIT_KEY, data.getInt(DELAY_UNIT_KEY));
         super.writeAdditional(provider, tag);
@@ -262,6 +355,8 @@ public class BroadcastCondition extends ScheduleWaitCondition {
     protected void readAdditional(net.minecraft.core.HolderLookup.Provider provider, CompoundTag tag) {
         if (tag.contains(PACK_KEY)) data.putInt(PACK_KEY, tag.getInt(PACK_KEY));
         if (tag.contains(BROADCAST_KEY)) data.putInt(BROADCAST_KEY, tag.getInt(BROADCAST_KEY));
+        if (tag.contains(PACK_ID_KEY)) data.putString(PACK_ID_KEY, tag.getString(PACK_ID_KEY));
+        if (tag.contains(BROADCAST_ID_KEY)) data.putString(BROADCAST_ID_KEY, tag.getString(BROADCAST_ID_KEY));
         if (tag.contains(DELAY_KEY)) data.putInt(DELAY_KEY, tag.getInt(DELAY_KEY));
         if (tag.contains(DELAY_UNIT_KEY)) data.putInt(DELAY_UNIT_KEY, tag.getInt(DELAY_UNIT_KEY));
         super.readAdditional(provider, tag);

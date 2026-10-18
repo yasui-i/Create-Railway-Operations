@@ -1,0 +1,5 @@
+{
+  "variants": {
+    "": { "model": "railway_operations:block/platform_broadcast" }
+  }
+}

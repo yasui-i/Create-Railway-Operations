@@ -5,13 +5,18 @@ import org.slf4j.Logger;
 import com.mojang.logging.LogUtils;
 import com.railway.railway_operations.audio.AudioManager;
 import com.railway.railway_operations.block.GhostSeatBlock;
+import com.railway.railway_operations.block.GhostSeatFullBlock;
+import com.railway.railway_operations.block.ModBlockEntities;
+import com.railway.railway_operations.block.PlatformBroadcastBlock;
 import com.railway.railway_operations.broadcast.BroadcastCondition;
+import com.railway.railway_operations.broadcast.BroadcastInstruction;
 import com.railway.railway_operations.command.RailwayCommand;
 import com.railway.railway_operations.condition.DoorControlCondition;
 import com.railway.railway_operations.network.AudioSyncAckPayload;
 import com.railway.railway_operations.network.AudioSyncChunkPayload;
 import com.railway.railway_operations.network.AudioSyncStartPayload;
 import com.railway.railway_operations.network.ClientboundAudioDataPacket;
+import com.railway.railway_operations.network.PlatformBroadcastConfigPacket;
 import com.railway.railway_operations.network.ClientboundPlayBroadcastPacket;
 import com.railway.railway_operations.network.ServerboundAudioRequestPacket;
 import com.simibubi.create.api.behaviour.interaction.MovingInteractionBehaviour;
@@ -24,18 +29,21 @@ import java.util.function.Consumer;
 
 import net.createmod.catnip.data.Pair;
 import net.minecraft.network.protocol.Packet;
+import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.network.ConfigurationTask;
 import net.minecraft.world.item.BlockItem;
-import net.minecraft.world.item.CreativeModeTabs;
+import net.minecraft.world.item.CreativeModeTab;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.neoforged.neoforge.common.NeoForge;
-import net.neoforged.neoforge.event.BuildCreativeModeTabContentsEvent;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
 import net.neoforged.neoforge.network.PacketDistributor;
@@ -43,6 +51,7 @@ import net.neoforged.neoforge.network.event.RegisterConfigurationTasksEvent;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 import net.neoforged.neoforge.registries.DeferredBlock;
+import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredItem;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
@@ -58,10 +67,34 @@ public class CreateRailwayOperations {
     public static final DeferredRegister.Blocks BLOCKS = DeferredRegister.createBlocks(MODID);
     public static final DeferredRegister.Items ITEMS = DeferredRegister.createItems(MODID);
 
+    public static final DeferredRegister<CreativeModeTab> CREATIVE_TABS =
+            DeferredRegister.create(Registries.CREATIVE_MODE_TAB, MODID);
+
     public static final DeferredBlock<GhostSeatBlock> GHOST_SEAT =
             BLOCKS.register("ghost_seat", GhostSeatBlock::new);
     public static final DeferredItem<BlockItem> GHOST_SEAT_ITEM =
             ITEMS.registerSimpleBlockItem("ghost_seat", GHOST_SEAT);
+
+    public static final DeferredBlock<GhostSeatFullBlock> GHOST_SEAT_FULL =
+            BLOCKS.register("ghost_seat_full", GhostSeatFullBlock::new);
+    public static final DeferredItem<BlockItem> GHOST_SEAT_FULL_ITEM =
+            ITEMS.registerSimpleBlockItem("ghost_seat_full", GHOST_SEAT_FULL);
+
+    public static final DeferredBlock<PlatformBroadcastBlock> PLATFORM_BROADCAST =
+            BLOCKS.register("platform_broadcast", () -> new PlatformBroadcastBlock());
+    public static final DeferredItem<BlockItem> PLATFORM_BROADCAST_ITEM =
+            ITEMS.registerSimpleBlockItem("platform_broadcast", PLATFORM_BROADCAST);
+
+    public static final DeferredHolder<CreativeModeTab, CreativeModeTab> CREATIVE_TAB =
+            CREATIVE_TABS.register("tab", () -> CreativeModeTab.builder()
+                    .title(Component.translatable("itemGroup." + MODID))
+                    .icon(() -> new ItemStack(Items.NOTE_BLOCK))
+                    .displayItems((params, output) -> {
+                        output.accept(GHOST_SEAT_ITEM.get());
+                        output.accept(GHOST_SEAT_FULL_ITEM.get());
+                        output.accept(PLATFORM_BROADCAST_ITEM.get());
+                    })
+                    .build());
 
     public CreateRailwayOperations(IEventBus modEventBus, ModContainer modContainer) {
         modEventBus.addListener(this::commonSetup);
@@ -70,11 +103,12 @@ public class CreateRailwayOperations {
 
         BLOCKS.register(modEventBus);
         ITEMS.register(modEventBus);
+        CREATIVE_TABS.register(modEventBus);
+        ModBlockEntities.REGISTRY.register(modEventBus);
 
         NeoForge.EVENT_BUS.register(this);
         NeoForge.EVENT_BUS.addListener(
                 (RegisterCommandsEvent e) -> RailwayCommand.register(e.getDispatcher()));
-        modEventBus.addListener(this::addCreative);
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
@@ -86,12 +120,18 @@ public class CreateRailwayOperations {
             Schedule.CONDITION_TYPES.add(Pair.of(
                     ResourceLocation.fromNamespaceAndPath(MODID, "broadcast"),
                     BroadcastCondition::new));
-            LOGGER.info("Registered schedule conditions");
+            Schedule.INSTRUCTION_TYPES.add(Pair.of(
+                    ResourceLocation.fromNamespaceAndPath(MODID, "broadcast_instruction"),
+                    BroadcastInstruction::new));
+            LOGGER.info("Registered schedule conditions and instructions");
 
             GhostSeatBlock block = GHOST_SEAT.get();
             MovingInteractionBehaviour.REGISTRY.register(block, new SeatInteractionBehaviour());
             MovementBehaviour.REGISTRY.register(block, new SeatMovementBehaviour());
-            LOGGER.info("Registered seat behaviours for GhostSeatBlock");
+            GhostSeatFullBlock fullBlock = GHOST_SEAT_FULL.get();
+            MovingInteractionBehaviour.REGISTRY.register(fullBlock, new SeatInteractionBehaviour());
+            MovementBehaviour.REGISTRY.register(fullBlock, new SeatMovementBehaviour());
+            LOGGER.info("Registered seat behaviours for GhostSeatBlock and GhostSeatFullBlock");
         });
     }
 
@@ -210,12 +250,12 @@ public class CreateRailwayOperations {
                     com.railway.railway_operations.network.BroadcastPacketHandler
                             .onDataReceived(p.hash());
                 }));
-    }
 
-    private void addCreative(BuildCreativeModeTabContentsEvent event) {
-        if (event.getTabKey() == CreativeModeTabs.FUNCTIONAL_BLOCKS) {
-            event.accept(GHOST_SEAT_ITEM);
-        }
+        // Platform broadcast config sync (client → server)
+        registrar.playToServer(
+                PlatformBroadcastConfigPacket.TYPE,
+                PlatformBroadcastConfigPacket.STREAM_CODEC,
+                PlatformBroadcastConfigPacket::handle);
     }
 
     @SubscribeEvent
